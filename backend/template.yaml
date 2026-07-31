@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  URL Crawler App backend — API Gateway, Submit/Crawler/Status Lambdas,
+  DynamoDB jobs table, SQS crawl queue, S3 results bucket.
+
+Parameters:
+  FrontendOrigin:
+    Type: String
+    Description: >
+      Origin of the frontend SPA (e.g. https://app.example.com), used for
+      API Gateway CORS and the results bucket's CORS rule.
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 10
+    MemorySize: 128
+
+Resources:
+  JobsTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: jobId
+        Type: String
+
+  CrawlQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+
+  ResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [GET]
+            AllowedOrigins: [!Ref FrontendOrigin]
+            AllowedHeaders: ['*']
+            MaxAge: 3000
+
+  CrawlerApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowOrigin: !Sub "'${FrontendOrigin}'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+
+  SubmitFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/submit/
+      Handler: index.handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref JobsTable
+          QUEUE_URL: !Ref CrawlQueue
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref JobsTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt CrawlQueue.QueueName
+      Events:
+        SubmitJob:
+          Type: Api
+          Properties:
+            RestApiId: !Ref CrawlerApi
+            Path: /jobs
+            Method: POST
+
+  CrawlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/crawler/
+      Handler: index.handler
+      Timeout: 30
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref JobsTable
+          BUCKET_NAME: !Ref ResultsBucket
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - S3CrudPolicy:
+            BucketName: !Ref ResultsBucket
+      Events:
+        CrawlQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt CrawlQueue.Arn
+            BatchSize: 1
+
+  StatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/status/
+      Handler: index.handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref JobsTable
+          BUCKET_NAME: !Ref ResultsBucket
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref JobsTable
+        - S3ReadPolicy:
+            BucketName: !Ref ResultsBucket
+      Events:
+        GetStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref CrawlerApi
+            Path: /status/{jobId}
+            Method: GET
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for the API Gateway stage
+    Value: !Sub "https://${CrawlerApi}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+  JobsTableName:
+    Value: !Ref JobsTable
+  CrawlQueueUrl:
+    Value: !Ref CrawlQueue
+  ResultsBucketName:
+    Value: !Ref ResultsBucket
