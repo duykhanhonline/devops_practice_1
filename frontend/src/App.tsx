@@ -13,7 +13,7 @@ function App() {
 
   return (
     <main>
-      <h1>URL Crawler testing</h1>
+      <h1>URL Crawler</h1>
       <UrlForm onSubmit={setSubmittedUrl} disabled={isBusy} />
       <StatusIndicator state={state} />
       {state.phase === 'done' && <ResultViewer jobId={state.jobId} html={state.html} />}
