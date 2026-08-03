@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::url-crawler-frontend-frontendbucket-ja1ztvuiaddl",
+        "arn:aws:s3:::url-crawler-frontend-frontendbucket-ja1ztvuiaddl/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudfront:CreateInvalidation",
+      "Resource": "arn:aws:cloudfront::389072173099:distribution/E3TUTLF6Q5IHQE"
+    }
+  ]
+}
