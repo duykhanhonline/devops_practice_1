@@ -2,6 +2,7 @@
 
 
 /frontend/node_modules/*
+/backend/.aws-sam/*
 logs
 *.log
 npm-debug.log*

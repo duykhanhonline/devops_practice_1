@@ -5,11 +5,12 @@ Description: >
   DynamoDB jobs table, SQS crawl queue, S3 results bucket.
 
 Parameters:
-  FrontendOrigin:
-    Type: String
+  AllowedOrigins:
+    Type: CommaDelimitedList
     Description: >
-      Origin of the frontend SPA (e.g. https://app.example.com), used for
-      API Gateway CORS and the results bucket's CORS rule.
+      Frontend origins allowed to call this API and fetch from the results
+      bucket (e.g. http://localhost:5174,https://app.example.com). Each must
+      match a request's Origin header exactly.
 
 Globals:
   Function:
@@ -36,7 +37,7 @@ Resources:
       CorsConfiguration:
         CorsRules:
           - AllowedMethods: [GET]
-            AllowedOrigins: [!Ref FrontendOrigin]
+            AllowedOrigins: !Ref AllowedOrigins
             AllowedHeaders: ['*']
             MaxAge: 3000
 
@@ -44,10 +45,9 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
-      Cors:
-        AllowOrigin: !Sub "'${FrontendOrigin}'"
-        AllowMethods: "'GET,POST,OPTIONS'"
-        AllowHeaders: "'Content-Type'"
+      # No built-in Cors property: that only bakes in one static origin.
+      # Submit/Status handle CORS themselves (see their OPTIONS events below)
+      # so they can reflect an allow-listed Origin per request.
 
   SubmitFunction:
     Type: AWS::Serverless::Function
@@ -58,6 +58,7 @@ Resources:
         Variables:
           TABLE_NAME: !Ref JobsTable
           QUEUE_URL: !Ref CrawlQueue
+          ALLOWED_ORIGINS: !Join [',', !Ref AllowedOrigins]
       Policies:
         - DynamoDBWritePolicy:
             TableName: !Ref JobsTable
@@ -70,17 +71,25 @@ Resources:
             RestApiId: !Ref CrawlerApi
             Path: /jobs
             Method: POST
+        SubmitJobOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref CrawlerApi
+            Path: /jobs
+            Method: OPTIONS
 
   CrawlerFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: src/crawler/
       Handler: index.handler
+      Runtime: python3.13
       Timeout: 30
       Environment:
         Variables:
           TABLE_NAME: !Ref JobsTable
           BUCKET_NAME: !Ref ResultsBucket
+          LOG_LEVEL: INFO
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref JobsTable
@@ -93,6 +102,12 @@ Resources:
             Queue: !GetAtt CrawlQueue.Arn
             BatchSize: 1
 
+  CrawlerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${CrawlerFunction}"
+      RetentionInDays: 14
+
   StatusFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -102,6 +117,7 @@ Resources:
         Variables:
           TABLE_NAME: !Ref JobsTable
           BUCKET_NAME: !Ref ResultsBucket
+          ALLOWED_ORIGINS: !Join [',', !Ref AllowedOrigins]
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref JobsTable
@@ -114,6 +130,75 @@ Resources:
             RestApiId: !Ref CrawlerApi
             Path: /status/{jobId}
             Method: GET
+        GetStatusOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref CrawlerApi
+            Path: /status/{jobId}
+            Method: OPTIONS
+
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+
+  Api4xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: One or more 4xx responses from the API in the last 5 minutes
+      Namespace: AWS/ApiGateway
+      MetricName: 4XXError
+      Dimensions:
+        - Name: ApiName
+          Value: url-crawler-backend
+        - Name: Stage
+          Value: prod
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: One or more 5xx responses from the API in the last 5 minutes
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - Name: ApiName
+          Value: url-crawler-backend
+        - Name: Stage
+          Value: prod
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  AlertNotifierFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/alert-notifier/
+      Handler: index.handler
+      Environment:
+        Variables:
+          SLACK_WEBHOOK_URL: ''
+      Events:
+        AlarmNotification:
+          Type: SNS
+          Properties:
+            Topic: !Ref AlertsTopic
+
+  AlertNotifierFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AlertNotifierFunction}"
+      RetentionInDays: 14
 
 Outputs:
   ApiUrl:
